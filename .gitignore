@@ -210,3 +210,5 @@ __marimo__/
 
 
 hw/ 
+data/options*
+data/prac*
