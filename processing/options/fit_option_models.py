@@ -66,7 +66,7 @@ for model_name in models.keys():
     for date in df['date'].unique():
         market_df = df[df['date'] == date]
         
-        params_fit[date] = fit_model(market_df, fwd, model, pricer)
+        params_fit[date] = fit_model(market_df, fwd, div_disc, model, model_name, pricer)
 
     params_fit = pd.DataFrame.from_dict(params_fit, orient='index')
     params_fit.to_csv(model_name + '_fits.csv')
