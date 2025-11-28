@@ -4,6 +4,7 @@ import numpy as np
 from fypy.market.MarketSurface import MarketSlice, MarketSurface
 from fypy.fit.Targets import Targets
 from fypy.fit.Calibrator import Calibrator, LeastSquares
+from fypy.model.levy import LevyModel
 
 
 param_orders = {
@@ -53,7 +54,7 @@ def fit_model(market_df, fwd, div_disc, model, model_name, pricer, top_n_volume=
 
     def targets_pricer() -> np.ndarray:
         # Function used to evaluate the model prices for each target
-        if np.isnan(pricer._model.convexity_correction()):
+        if issubclass(model.__class__, LevyModel.LevyModel) and np.isnan(pricer._model.convexity_correction()):
             return np.zeros_like(target_prices)
         
         all_prices = []

@@ -1,6 +1,7 @@
 import numpy as np
 
 from fypy.termstructures.DiscountCurve import DiscountCurve
+from fypy.model.sv.Heston import Heston
 
 
 class DiscountCurve_Measured(DiscountCurve):
@@ -31,3 +32,15 @@ class DiscountCurve_Measured(DiscountCurve):
         return self._r.loc[self.current_time]*np.ones_like(T)
 
 
+class Heston_fix(Heston):
+    def default_params(self):
+        """
+        v_0: float = 0.04,
+                 theta: float = 0.04,
+                 kappa: float = 2.,
+                 sigma_v: float = 0.3,
+                 rho: float = -0.6
+        :return:
+        """
+        # v_0, theta, kappa, sigma_v, rho
+        return np.asarray(self._heston_default_params())

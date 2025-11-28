@@ -4,12 +4,11 @@ import pandas as pd
 
 from fypy.pricing.fourier.ProjEuropeanPricer import ProjEuropeanPricer
 from fypy.model.levy import VarianceGamma, MertonJD, BlackScholes
-from fypy.model.sv.Heston import Heston
 from fypy.model.sv.Bates import Bates
 from fypy.termstructures.EquityForward import EquityForward
 from fypy.termstructures.DiscountCurve import DiscountCurve_ConstRate
 
-from ...utils.options.option_utils import DiscountCurve_Measured
+from ...utils.options.option_utils import DiscountCurve_Measured, Heston_fix
 from ...utils.options.fit import fit_model
 
 
@@ -43,7 +42,7 @@ fwd = EquityForward(S0=0, discount=disc_curve, divDiscount=div_disc)
 models = {
     'BSM': BlackScholes(forwardCurve=fwd, discountCurve=disc_curve),
     'MJD': MertonJD(forwardCurve=fwd, discountCurve=disc_curve),
-    'Hes': Heston(forwardCurve=fwd, discountCurve=disc_curve),
+    'Hes': Heston_fix(forwardCurve=fwd, discountCurve=disc_curve),
     'BJD': Bates(forwardCurve=fwd, discountCurve=disc_curve),
     'VG': VarianceGamma(forwardCurve=fwd, discountCurve=disc_curve),
 }
