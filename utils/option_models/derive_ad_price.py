@@ -1,4 +1,6 @@
 import numpy as np
+import pandas as pd
+from itertools import chain
 import matplotlib.pyplot as plt
 from fypy.model.levy import BlackScholes, MertonJD, VarianceGamma
 from fypy.model.sv.Bates import Bates
@@ -8,7 +10,6 @@ from fypy.termstructures.DiscountCurve import DiscountCurve_ConstRate
 from fypy.market.MarketSurface import MarketSlice, MarketSurface
 from fypy.fit.Targets import Targets
 from fypy.fit.Calibrator import Calibrator, LeastSquares
-from utils.risk_neutral_dist.GilPeleazEuropeanCDF import GilPeleazEuropeanPricer_cdf
 from utils.risk_neutral_dist.ProjEuropeanPricerCDF import ProjEuropeanPricer_cdf
 from utils.risk_neutral_dist.functions import get_cdf, get_pdf
 
@@ -16,16 +17,16 @@ from utils.risk_neutral_dist.functions import get_cdf, get_pdf
 MODELS = {
     # model name with initial guesses for parameters
     'BlackScholes': {'sigma': 0.2},
-    'Bates': {
-        'v_0': 0.04,
-        'theta': 0.04,
-        'kappa': 1.0,
-        'sigma_v': 0.2,
-        'rho': -0.5,
-        'lam': 0.1,
-        'muj': -0.1,
-        'sigj': 0.2,
-    },
+    # 'Bates': {
+    #     'v_0': 0.04,
+    #     'theta': 0.04,
+    #     'kappa': 1.0,
+    #     'sigma_v': 0.2,
+    #     'rho': -0.5,
+    #     'lam': 0.1,
+    #     'muj': -0.1,
+    #     'sigj': 0.2,
+    # },
     'Heston': {
         'v_0': 0.04,
         'theta': 0.04,
@@ -139,7 +140,7 @@ class OptionModel:
         return f"OptionModel(name='{self.model_name}', params={self.initial_params}, S0={self.S0}, rate={self.rate})"
 
 
-def calibrate_model_for_date(date_data, option_model):
+def calibrate_model_for_date(date_data, option_model, top_n_volume=50):
     """
     Generalized calibration function for any pricing model with arbitrary parameters
 
@@ -169,9 +170,13 @@ def calibrate_model_for_date(date_data, option_model):
         target_prices = []
 
         for ttm, group in ttm_groups:
-            strikes = group['strike'].values
-            is_calls = group['is_call'].values.astype(bool)
-            mid_prices = group['price'].values
+            # not sure why a sorted df would ruin results, but keeping same order maintains it
+            filtered_group = group[group['volume'].isin(
+                group['volume'].nlargest(top_n_volume).tolist()
+                )]
+            strikes = filtered_group['strike'].values
+            is_calls = filtered_group['is_call'].values.astype(bool)
+            mid_prices = filtered_group['price'].values
 
             # Create market slice
             market_slice = MarketSlice(
@@ -227,7 +232,8 @@ def calibrate_model_for_date(date_data, option_model):
     except Exception as e:
         print(f"Calibration failed: {e}")
         return None, None, None, None
-    
+
+
 def get_rnds(pricer, surface):
     pdfs = {}
     cdfs = {}
@@ -242,6 +248,7 @@ def get_rnds(pricer, surface):
         cdfs[ttm] = {'strikes': strikes, 'rnd': cdf}
         pdfs[ttm] = {'strikes': strikes, 'rnd': pdf}
     return pdfs, cdfs
+
 
 def check_rnd_properties(pdfs, cdfs, ttms, model_name, S0=1):
     _, (ax1, ax2) = plt.subplots(1, 2)
@@ -269,9 +276,27 @@ def check_single_pdf(ttms, pdfs, S0=1):
 
 
 def compute_arrow_debreu_prices(pricer, pdfs, surface):
-    arrow_debreu_prices = {}
-    for ttm in surface.ttms:
+    values = [
+        [(ttm, k, v) for k, v in zip(pdfs[ttm]['strikes'], pdfs[ttm]['rnd'])]
+        for ttm in pdfs.keys()
+        ]
+    pdf_df_pivot = (
+        pd.DataFrame(chain(*values), columns=['ttm', 'strike', 'pdf'])
+          .drop_duplicates()
+          .pivot(index='strike', columns='ttm', values='pdf')
+          )
+    # interpolate using Malz (2014): 
+    # cubic-spline interpolation and flat fill at end points outside data
+    pdf_df_pivot_interp = (
+        pdf_df_pivot.interpolate(method='cubicspline', axis='index')
+                    .bfill(axis='index')
+                    .ffill(axis='index')
+                    )
+
+    adp_df = pdf_df_pivot_interp.copy()
+    for ttm in adp_df.columns:
         # same r for all ttms since flat discount curve
-        adp = np.exp(-1 * pricer.get_r(surface.ttms[0]) * ttm) * pdfs[ttm]['rnd']
-        arrow_debreu_prices[ttm] = adp
-    return arrow_debreu_prices
+        # but will accept a proper discount curve
+        adp_df[ttm] = np.exp(-1 * pricer.get_r(ttm) * ttm) * pdf_df_pivot_interp[ttm]
+
+    return adp_df
