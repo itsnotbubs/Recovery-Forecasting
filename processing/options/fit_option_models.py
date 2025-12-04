@@ -1,26 +1,12 @@
 from zipfile import ZipFile
+from tqdm import tqdm
 
 import pandas as pd
+import numpy as np
 
-from fypy.pricing.fourier.ProjEuropeanPricer import ProjEuropeanPricer
-from fypy.model.levy import VarianceGamma, MertonJD, BlackScholes
-from fypy.model.sv.Bates import Bates
-from fypy.termstructures.EquityForward import EquityForward
-from fypy.termstructures.DiscountCurve import DiscountCurve_ConstRate
-
-from ...utils.options.option_utils import DiscountCurve_Measured, Heston_fix
-from ...utils.options.fit import fit_model
-
-
-t_bills_rate = pd.read_csv('../../data/DGS1MO.csv')
-
-t_bills_rate['observation_date'] = pd.to_datetime(t_bills_rate['observation_date'])
-t_bills_rate = t_bills_rate[ # min and max of option data dates
-    (t_bills_rate['observation_date'] >= pd.to_datetime('2019-01-04 00:00:00'))
-    & (t_bills_rate['observation_date'] <= pd.to_datetime('2024-12-27 00:00:00'))
-]
-t_bills_rate = t_bills_rate.set_index('observation_date')
-daily_decimal_t_bill_yield = (1 + t_bills_rate['DGS1MO'].ffill() / 100) ** (1/252) - 1
+from ...utils.options.option_utils import ProjEuropeanPricer_fix
+from ...utils.options.fit import fit_model, initial_params
+from .constants import models, fwd, div_disc
 
 
 dfs = []
@@ -35,37 +21,27 @@ df['date'] = pd.to_datetime(df['date'])
 df['ttm'] = (df['expiration'] - df['date']).dt.days
 
 
-disc_curve = DiscountCurve_Measured(rates=daily_decimal_t_bill_yield)
-div_disc = DiscountCurve_ConstRate(rate=0)
-fwd = EquityForward(S0=0, discount=disc_curve, divDiscount=div_disc)
-
-models = {
-    'BSM': BlackScholes(forwardCurve=fwd, discountCurve=disc_curve),
-    'MJD': MertonJD(forwardCurve=fwd, discountCurve=disc_curve),
-    'Hes': Heston_fix(forwardCurve=fwd, discountCurve=disc_curve),
-    'BJD': Bates(forwardCurve=fwd, discountCurve=disc_curve),
-    'VG': VarianceGamma(forwardCurve=fwd, discountCurve=disc_curve),
-}
-param_orders = {
-    'BSM': ['sigma'],
-    'MJD': ['sigma', 'lam', 'muj', 'sigj'],
-    'Hes': ['v_0', 'theta', 'kappa', 'sigma_v', 'rho'],
-    'BJD': ['v_0', 'theta', 'kappa', 'sigma_v', 'rho', 'lam', 'muj', 'sigj'],
-    'VG': ['sigma', 'theta', 'nu'],
-}
-
-
 for model_name in models.keys():
     model = models.get(model_name)
+    guess = np.array(list(initial_params[model_name].values()), dtype=np.float64)
 
-    pricer = ProjEuropeanPricer(model=model, N=2 ** 11, L=16 if model_name == 'Hes' else 12)
+    pricers = [
+        ProjEuropeanPricer_fix(model=model, N=2 ** 9, L=14, order=1),
+        ProjEuropeanPricer_fix(model=model, N=2 ** 9, L=13, order=1),
+        ProjEuropeanPricer_fix(model=model, N=2 ** 9, L=12, order=1),
+        ProjEuropeanPricer_fix(model=model, N=2 ** 9, L=11, order=1)
+    ]
     
     params_fit = {} # {date: {col: val}}
 
-    for date in df['date'].unique():
+    for date in tqdm(df['date'].unique()):
         market_df = df[df['date'] == date]
         
-        params_fit[date] = fit_model(market_df, fwd, div_disc, model, model_name, pricer)
+        try:
+            params_fit[date], guess = fit_model(market_df, fwd, div_disc, model, model_name, pricers, guess)
+        except Exception as e:
+            # failed to converge
+            pass
 
     params_fit = pd.DataFrame.from_dict(params_fit, orient='index')
-    params_fit.to_csv(model_name + '_fits.csv')
+    params_fit.to_csv(model_name + '_fits_51_PE_multiL_linear_softl1.csv')
