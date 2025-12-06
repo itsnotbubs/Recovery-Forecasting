@@ -11,7 +11,7 @@ from fypy.market.MarketSurface import MarketSlice, MarketSurface
 from fypy.fit.Targets import Targets
 from fypy.fit.Calibrator import Calibrator, LeastSquares
 from utils.risk_neutral_dist.ProjEuropeanPricerCDF import ProjEuropeanPricer_cdf
-from utils.risk_neutral_dist.functions import get_cdf, get_pdf
+from utils.risk_neutral_dist.functions import get_cdf, get_pdf, get_discrete_pdf
 
 
 MODELS = {
@@ -40,11 +40,11 @@ MODELS = {
         'muj': -0.1,
         'sigj': 0.2,
     },
-    'VarianceGamma': {
-        'sigma': 0.2,
-        'theta': 0.04,
-        'nu': 0.2,
-    }
+    # 'VarianceGamma': {
+    #     'sigma': 0.2,
+    #     'theta': 0.04,
+    #     'nu': 0.2,
+    # }
 }
 
 
@@ -157,11 +157,17 @@ def calibrate_model_for_date(date_data, option_model, top_n_volume=50):
     try:
         # Create pricer
         if option_model.model_name in ('Hes', 'Bates'):
-            pricer_params = {'N': 2**10, 'L': 17, 'limit': 1000}
+            pricer_params = {'N': 2**10, 'L': 17, 'limit': 1000, 'order': 3}
+        elif option_model.model_name in ('VarianceGamma'):
+            pricer_params = {'N': 2**10, 'L': 17, 'limit': 1000, 'order': 1}
         else:
-            pricer_params = {'N': 2**10, 'L': 12, 'limit': 1000}
+            pricer_params = {'N': 2**10, 'L': 12, 'limit': 1000, 'order': 3}
         model_instance = option_model.model_instance
-        pricer = ProjEuropeanPricer_cdf(model=model_instance, N=pricer_params['N'], L=pricer_params['L'])
+        # if variance gamma - add order 3 for cubic and 1 for linear - default 1
+
+        pricer = ProjEuropeanPricer_cdf(
+            model=model_instance, N=pricer_params['N'], L=pricer_params['L'], order=pricer_params['order']
+            )
         # pricer = GilPeleazEuropeanPricer_cdf(model=model_instance, limit=pricer_params['limit'])
 
         # Prepare market data - group by time to maturity
@@ -237,17 +243,24 @@ def calibrate_model_for_date(date_data, option_model, top_n_volume=50):
 def get_rnds(pricer, surface):
     pdfs = {}
     cdfs = {}
+    pdfs_discrete = {}
     for ttm, market_slice in surface.slices.items():
         # could do a range of strikes instead but would need to match with is_calls
         # strikes = np.linspace(min(market_slice.strikes), max(market_slice.strikes), 10)
         strikes = market_slice.strikes
-
+        kwargs = {
+            'ttms': [ttm], 
+            'strikes': strikes, 
+            'is_calls': market_slice.is_calls
+        }
         # there is only one ttm per call, so we index at 0
-        cdf = get_cdf(pricer, ttms=[ttm], strikes=strikes, is_calls=market_slice.is_calls)[0]
-        pdf = get_pdf(pricer, ttms=[ttm], strikes=strikes, is_calls=market_slice.is_calls)[0]
+        cdf = get_cdf(pricer, **kwargs)[0]
+        pdf = get_pdf(pricer, **kwargs)[0]
+        pdf_discrete, strike_buckets = get_discrete_pdf(pricer, **kwargs)
         cdfs[ttm] = {'strikes': strikes, 'rnd': cdf}
         pdfs[ttm] = {'strikes': strikes, 'rnd': pdf}
-    return pdfs, cdfs
+        pdfs_discrete[ttm] = {'strikes': strike_buckets[0], 'rnd': pdf_discrete[0]}
+    return pdfs, cdfs, pdfs_discrete
 
 
 def check_rnd_properties(pdfs, cdfs, ttms, model_name, S0=1):
@@ -270,12 +283,13 @@ def check_single_pdf(ttms, pdfs, S0=1):
     for i, ax in enumerate(axs.flatten()):
         ttm = ttms[i]
         ax.plot(pdfs[ttm]['strikes'] / S0, pdfs[ttm]['rnd'])
+        ax.set_title(f"ttm - {round(ttm * 365, 0)} days")
         ax.grid()
     plt.tight_layout()
     fig.show()
 
 
-def compute_arrow_debreu_prices(pricer, pdfs, surface):
+def compute_arrow_debreu_prices(pricer, pdfs):
     values = [
         [(ttm, k, v) for k, v in zip(pdfs[ttm]['strikes'], pdfs[ttm]['rnd'])]
         for ttm in pdfs.keys()
@@ -283,7 +297,8 @@ def compute_arrow_debreu_prices(pricer, pdfs, surface):
     pdf_df_pivot = (
         pd.DataFrame(chain(*values), columns=['ttm', 'strike', 'pdf'])
           .drop_duplicates()
-          .pivot(index='strike', columns='ttm', values='pdf')
+        # avoid duplicates
+          .pivot_table(index='strike', columns='ttm', values='pdf')
           )
     # interpolate using Malz (2014): 
     # cubic-spline interpolation and flat fill at end points outside data
@@ -300,3 +315,4 @@ def compute_arrow_debreu_prices(pricer, pdfs, surface):
         adp_df[ttm] = np.exp(-1 * pricer.get_r(ttm) * ttm) * pdf_df_pivot_interp[ttm]
 
     return adp_df
+

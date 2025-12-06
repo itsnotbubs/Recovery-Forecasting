@@ -214,3 +214,24 @@ def generalized_recovery_ridge_approx_delta(dist_data, times, delta_0=0.9999, lm
 
     f = np.diag(D_inv) @ dist_data @ np.diag(H_inv)
     return f, D_inv, H_inv
+
+
+def compute_physical_dist(adp, key='pw_ridge', N=None):
+    """
+    key can be one of : 'pw' 'ridge' 'ridge_h1' 'pw_ridge'"
+    N is supplied if using 'pw', or 'pw_ridge
+    """
+    fns = {
+        'pw': generalized_recovery_piecewise_approx_delta,
+        'pw_ridge': generalized_recovery_piecewise_ridge_approx_delta,
+        'ridge': generalized_recovery_ridge_approx_delta,
+        'ridge_h1': generalized_recovery_ridge_approx_delta_h1,
+    }
+    fn = fns[key]
+    if N is not None:
+        f_dist, D_inv, H_inv = fn(adp.T.to_numpy(), adp.columns, pieces=N)
+    else:
+        f_dist, D_inv, H_inv = fn(adp.T.to_numpy(), adp.columns)
+    return f_dist, D_inv, H_inv
+
+
