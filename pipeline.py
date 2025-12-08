@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pickle
 import matplotlib.pyplot as plt
@@ -11,7 +12,7 @@ from utils.recovery.genralized_recovery import compute_physical_dist
 # hyperparamaters:
 TOP_N_VOLUME = 50
 
-def calibrate_models():
+def calibrate_models(filename):
     df = load_data("data/raw_options_data.zip", "data/DGS3MO.csv")
 
     # Calibrate across all dates using OptionModel class
@@ -26,7 +27,7 @@ def calibrate_models():
         
         for idx, date in enumerate(unique_dates[:5]):  # Limiting to first 5 dates
             date_df = df[df['date'] == date].copy()
-            date_df['T'] = (date_df['expiration'] - date_df['date']).dt.days / 365.0
+            # date_df['T'] = (date_df['expiration'] - date_df['date']).dt.days / 365.25
             
             S0 = date_df['Adjusted close'].iloc[0]
             rate = date_df['rate'].iloc[0]
@@ -77,7 +78,7 @@ def calibrate_models():
         print("="*70)
         print(calibrated_params_df.head())
         
-        with open(f'results/{model_name}-calibration.pkl', 'wb') as f:
+        with open(f'results/{model_name}-{filename}-calibration.pkl', 'wb') as f:
             pickle.dump(calibration_result, f)
     
     print("\nOverall Summary Statistics:")
@@ -93,7 +94,7 @@ def calibrate_models():
     return calibration_results
 
 
-def derive_rnds(calibration_results):
+def derive_rnds(calibration_results, filename=''):
     rnds_by_model = {}
     for model_name, model_data in calibration_results.items():
         print(f"Producing RNDs for model: {model_name}")
@@ -129,12 +130,13 @@ def derive_rnds(calibration_results):
             }
         
         rnds_by_model[model_name] = rnds_for_dates
-        with open(f'results/{model_name}-rnds.pkl', 'wb') as f:
+        with open(f'results/{model_name}-{filename}-rnds.pkl', 'wb') as f:
             pickle.dump(rnds_for_dates, f)
     
     return rnds_by_model
 
-def recover_fdist(rnds_by_model, calibration_results, N=12):
+
+def recover_fdist(rnds_by_model, calibration_results, filename='', N=12, has_pricer=True):
     piece_wise_cols = N
     model_f_dists = {}
     for model_name, rnds_for_dates in rnds_by_model.items():
@@ -144,15 +146,20 @@ def recover_fdist(rnds_by_model, calibration_results, N=12):
 
             pdfs = rnds['pdfs_discrete']
             adp = rnds['ad_prices']
-            pricer = calibration_results[model_name]['results_by_date'][dt]['calibrated_model']
-            S0 = pricer._model.spot()
+            if has_pricer:
+                pricer = calibration_results[model_name]['results_by_date'][dt]['calibrated_model']
+                S0 = pricer._model.spot()
+            else:
+                # choose the first ttm because it's the same across ttms
+                ttm_days = list(rnds_for_dates[dt]['pdfs_discrete'].keys())[0]
+                S0 = rnds_for_dates[dt]['pdfs_discrete'][ttm_days]['adj_close']
             
 
-            # f_dist_pw_ridge, D_inv_pw_ridge, H_inv_pw_ridge = compute_physical_dist(adp, key='pw_ridge', N=piece_wise_cols)
-            # f_dist_pw_ridge_df = pd.DataFrame(f_dist_pw_ridge, columns=adp.T.columns, index=adp.T.index).T
+            f_dist_pw_ridge, D_inv_pw_ridge, H_inv_pw_ridge = compute_physical_dist(adp, key='pw_ridge', N=piece_wise_cols)
+            f_dist_pw_ridge_df = pd.DataFrame(f_dist_pw_ridge, columns=adp.T.columns, index=adp.T.index).T
 
-            # f_dist_pw, D_inv_pw, H_inv_pw = compute_physical_dist(adp, key='pw', N=piece_wise_cols)
-            # f_dist_pw_df = pd.DataFrame(f_dist_pw, columns=adp.T.columns, index=adp.T.index).T
+            f_dist_pw, D_inv_pw, H_inv_pw = compute_physical_dist(adp, key='pw', N=piece_wise_cols)
+            f_dist_pw_df = pd.DataFrame(f_dist_pw, columns=adp.T.columns, index=adp.T.index).T
 
             f_dist_ridge_h1, D_inv_ridge_h1, H_inv_ridge_h1 = compute_physical_dist(adp, key='ridge_h1')
             f_dist_ridge_h1_df = pd.DataFrame(f_dist_ridge_h1, columns=adp.T.columns, index=adp.T.index).T
@@ -162,16 +169,23 @@ def recover_fdist(rnds_by_model, calibration_results, N=12):
 
             if idx == 0:
                 ttms = f_dist_ridge_df.columns
+                if has_pricer:
+                    fig, axs = plt.subplots(nrows=len(ttms)//3, ncols=3, figsize=(10, 16))
+                else:
+                    fig, axs = plt.subplots(nrows=1, ncols=len(ttms), figsize=(10, 4))
 
-                fig, axs = plt.subplots(nrows=len(ttms)//3, ncols=3, figsize=(10, 16))
+                print(dt)
                 for i, ax in enumerate(axs.flatten()):
                     ttm = ttms[i]
-                    ax.plot(pdfs[ttm]['strikes'] / S0, pdfs[ttm]['rnd'], label='rnd')
-                    # ax.plot(f_dist_pw_ridge_df.index / S0, f_dist_pw_ridge_df[ttm], label='f_dist_pw_ridge')
-                    # ax.plot(f_dist_pw_df.index / S0, f_dist_pw_df[ttm], label='f_dist_pw')
-                    ax.plot(f_dist_ridge_h1_df.index / S0, f_dist_ridge_h1_df[ttm], label='f_dist_ridge_h1')
-                    ax.plot(f_dist_ridge_df.index / S0, f_dist_ridge_df[ttm], label='f_dist_ridge')
-                    ax.set_title(f"ttm - {round(ttm * 365, 0)} days")
+                    ax.plot(pdfs[ttm]['strikes'] / S0, pdfs[ttm]['rnd'], label=f'rnd-{model_name}')
+                    ax.plot(f_dist_pw_ridge_df.index / S0, f_dist_pw_ridge_df[ttm], label=f'f_dist_pw_ridge-{model_name}')
+                    ax.plot(f_dist_pw_df.index / S0, f_dist_pw_df[ttm], label=f'f_dist_pw-{model_name}')
+                    ax.plot(f_dist_ridge_h1_df.index / S0, f_dist_ridge_h1_df[ttm], label=f'f_dist_ridge_h1-{model_name}')
+                    ax.plot(f_dist_ridge_df.index / S0, f_dist_ridge_df[ttm], label=f'f_dist_ridge-{model_name}')
+                    if has_pricer:
+                        ax.set_title(f"ttm - {round(ttm * 365, 0)} days")
+                    else:
+                        ax.set_title(f"ttm - {ttm} days")
                     ax.grid()
                 handles, labels = [], []
                 for ax in fig.axes:
@@ -182,18 +196,21 @@ def recover_fdist(rnds_by_model, calibration_results, N=12):
                 fig.legend(handles, labels, loc='right', bbox_to_anchor=(0.5, 0.05))
                 # plt.tight_layout()
                 plt.tight_layout(rect=[0.1, 0.1, 1, 1])
-                # fig.suptitle(f"comparing rnd with f dist for {dt}")
+                # fig.suptitle(f"{model_name}- comparing rnd with f dist for {dt}")
                 fig.show()
             
             f_dist_by_date[dt] = {
-                # 'pw_ridge': f_dist_pw_ridge,
-                # 'pw': f_dist_pw,
-                'ridge_h1': f_dist_ridge_h1,
-                'ridge': f_dist_ridge,
+                'pw_ridge': f_dist_pw_ridge_df,
+                'pw': f_dist_pw_df,
+                'ridge_h1': f_dist_ridge_h1_df,
+                'ridge': f_dist_ridge_df,
             }
+        with open(f'results/{model_name}-{filename}-f_dist.pkl', 'wb') as f:
+            pickle.dump(f_dist_by_date, f)
+
         model_f_dists[model_name] = f_dist_by_date
-        
-        return model_f_dists
+    
+    return model_f_dists
 
 
 def main(name="pipeline_results"):

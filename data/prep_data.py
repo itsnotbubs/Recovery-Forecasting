@@ -73,7 +73,7 @@ def load_data(data_path="data/raw_options_data.zip", rf_path="data/DGS3MO.csv"):
     # print(df[['date', 'rate']].head())
 
     df['is_call'] = df['Call/Put'].apply(lambda x: True if x == 'C' else False)
-    df['T'] = (df['expiration'] - df['date']).dt.days
+    df['T'] = (df['expiration'] - df['date']).dt.days/ 365.25
 
     return df
 
@@ -146,7 +146,7 @@ def market_returns(time_horizons=[7, 7 * 2, 7 * 4, 7 * 4 * 2]):
                     'horizon_days': horizon_days,
                     'horizon_date': horizon_date,
                     'adj_close_horizon': horizon_price,
-                    'days_diff': days_diff,
+                    'days_diff': days_diff / 365.25,
                     'log_return': log_return,
                     'rf_return': rf_return,
                     'excess_return': excess_return,

@@ -12,5 +12,8 @@ def get_arbitrage_based_SDF(x):
             normalized to S_{t}=1
     Outputs:
         m^{T}: estimation of transitory component of stochastic discount function
+
+        multiply AD-matrix * 1 / m^{T} to get physical distribution
+        
     """
     return np.amin(x) / x

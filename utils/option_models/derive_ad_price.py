@@ -11,6 +11,7 @@ from fypy.market.MarketSurface import MarketSlice, MarketSurface
 from fypy.fit.Targets import Targets
 from fypy.fit.Calibrator import Calibrator, LeastSquares
 from utils.risk_neutral_dist.ProjEuropeanPricerCDF import ProjEuropeanPricer_cdf
+from utils.risk_neutral_dist.HilbertEuropeanCDF import HilbertEuropeanPricer_cdf
 from utils.risk_neutral_dist.functions import get_cdf, get_pdf, get_discrete_pdf
 
 
@@ -40,11 +41,11 @@ MODELS = {
         'muj': -0.1,
         'sigj': 0.2,
     },
-    # 'VarianceGamma': {
-    #     'sigma': 0.2,
-    #     'theta': 0.04,
-    #     'nu': 0.2,
-    # }
+    'VarianceGamma': {
+        'sigma': 0.2,
+        'theta': 0.04,
+        'nu': 0.2,
+    }
 }
 
 
@@ -156,18 +157,45 @@ def calibrate_model_for_date(date_data, option_model, top_n_volume=50):
     """
     try:
         # Create pricer
-        if option_model.model_name in ('Hes', 'Bates'):
-            pricer_params = {'N': 2**10, 'L': 17, 'limit': 1000, 'order': 3}
+        if option_model.model_name in ('Bates'):
+            pricer_params = {'N': 2**11, 'Nh': 0.9}
         elif option_model.model_name in ('VarianceGamma'):
-            pricer_params = {'N': 2**10, 'L': 17, 'limit': 1000, 'order': 1}
+            pricer_params = {'N': 2**11, 'Nh': 2**4}
         else:
-            pricer_params = {'N': 2**10, 'L': 12, 'limit': 1000, 'order': 3}
-        model_instance = option_model.model_instance
-        # if variance gamma - add order 3 for cubic and 1 for linear - default 1
+            pricer_params = {'N': 2**11, 'Nh': 2**2}
 
-        pricer = ProjEuropeanPricer_cdf(
-            model=model_instance, N=pricer_params['N'], L=pricer_params['L'], order=pricer_params['order']
+        model_instance = option_model.model_instance
+
+        # Nh > 2**4 causes it to not match GilPeleazEuropeanPricer_cdf for simpler models
+        pricer = HilbertEuropeanPricer_cdf(
+            model=model_instance, N=pricer_params['N'], Nh=pricer_params['Nh']
             )
+
+        # if option_model.model_name in ('Hes'):
+        #     pricer_params = {'N': 2**11, 'L': 17, 'limit': 1000, 'order': 3, 'Nh': 2**3}
+        # elif option_model.model_name in ('Bates'):
+        #     pricer_params = {'N': 2**11, 'L': 17, 'limit': 1000, 'order': 3, 'Nh': 0.5}
+        # elif option_model.model_name in ('VarianceGamma'):
+        #     pricer_params = {'N': 2**11, 'L': 12, 'limit': 1000, 'order': 1, 'Nh': 2**4}
+        # else:
+        #     pricer_params = {'N': 2**11, 'L': 12, 'limit': 1000, 'order': 3, 'Nh': 0.9}
+
+
+        # pricer = ProjEuropeanPricer_cdf(
+        #     model=model_instance, N=pricer_params['N'], L=pricer_params['L'], order=pricer_params['order']
+        #     )
+        # if option_model.model_name in ('BlackScholes', 'Heston', 'MertonJD'):
+        #     # if variance gamma - add order 3 for cubic and 1 for linear - default 1
+        #     pricer = ProjEuropeanPricer_cdf(
+        #         model=model_instance, N=pricer_params['N'], L=pricer_params['L'], order=pricer_params['order']
+        #         )
+        # elif option_model.model_name in ('Bates', 'VarianceGamma'):
+        #     # Nh > 2**4 causes it to not match GilPeleazEuropeanPricer_cdf for simpler models
+        #     pricer = HilbertEuropeanPricer_cdf(
+        #         model=model_instance, N=pricer_params['N'], Nh=pricer_params['Nh']
+        #         )
+        # else:
+        #     raise ValueError(f"{option_model.model_name} was not implemented")
         # pricer = GilPeleazEuropeanPricer_cdf(model=model_instance, limit=pricer_params['limit'])
 
         # Prepare market data - group by time to maturity
@@ -214,7 +242,7 @@ def calibrate_model_for_date(date_data, option_model, top_n_volume=50):
             return np.concatenate(all_prices)
 
         # Create calibrator
-        calibrator = Calibrator(model=model_instance, minimizer=LeastSquares())
+        calibrator = Calibrator(model=model_instance, minimizer=LeastSquares(max_nfev=1000 * top_n_volume, loss='soft_l1'))
         # override library which makes the guess the default_params()
         # the default_params for some of the models look dodgy, not in an array format
         calibrator._guess = model_instance.get_params()
@@ -247,19 +275,22 @@ def get_rnds(pricer, surface):
     for ttm, market_slice in surface.slices.items():
         # could do a range of strikes instead but would need to match with is_calls
         # strikes = np.linspace(min(market_slice.strikes), max(market_slice.strikes), 10)
-        strikes = market_slice.strikes
+        strikes_standard = np.linspace(market_slice.strikes.min(), market_slice.strikes.max(), 50)
         kwargs = {
             'ttms': [ttm], 
-            'strikes': strikes, 
-            'is_calls': market_slice.is_calls
+            'strikes': strikes_standard, 
+            'is_calls': np.ones(len(strikes_standard), dtype=bool),
         }
         # there is only one ttm per call, so we index at 0
         cdf = get_cdf(pricer, **kwargs)[0]
         pdf = get_pdf(pricer, **kwargs)[0]
-        pdf_discrete, strike_buckets = get_discrete_pdf(pricer, **kwargs)
-        cdfs[ttm] = {'strikes': strikes, 'rnd': cdf}
-        pdfs[ttm] = {'strikes': strikes, 'rnd': pdf}
-        pdfs_discrete[ttm] = {'strikes': strike_buckets[0], 'rnd': pdf_discrete[0]}
+        EPS = np.diff(strikes_standard)[0]
+        pdf_discrete = get_pdf(pricer, EPS=EPS, **kwargs) * EPS
+        # pdf_discrete, strike_buckets = get_discrete_pdf(pricer, **kwargs)
+        cdfs[ttm] = {'strikes': strikes_standard, 'rnd': cdf}
+        pdfs[ttm] = {'strikes': strikes_standard, 'rnd': pdf}
+        pdfs_discrete[ttm] = {'strikes': strikes_standard, 'rnd': pdf_discrete[0]}
+        # pdfs_discrete[ttm] = {'strikes': strike_buckets[0], 'rnd': pdf_discrete[0]}
     return pdfs, cdfs, pdfs_discrete
 
 
@@ -289,7 +320,7 @@ def check_single_pdf(ttms, pdfs, S0=1):
     fig.show()
 
 
-def compute_arrow_debreu_prices(pricer, pdfs):
+def compute_arrow_debreu_prices(pricer, pdfs, rf_in_pricer=False):
     values = [
         [(ttm, k, v) for k, v in zip(pdfs[ttm]['strikes'], pdfs[ttm]['rnd'])]
         for ttm in pdfs.keys()
@@ -312,7 +343,10 @@ def compute_arrow_debreu_prices(pricer, pdfs):
     for ttm in adp_df.columns:
         # same r for all ttms since flat discount curve
         # but will accept a proper discount curve
-        adp_df[ttm] = np.exp(-1 * pricer.get_r(ttm) * ttm) * pdf_df_pivot_interp[ttm]
+        if rf_in_pricer:
+            adp_df[ttm] = np.exp(-1 * pricer.get_r(ttm) * ttm) * pdf_df_pivot_interp[ttm]
+        else:
+            adp_df[ttm] = np.exp(-1 * pdfs[ttm]['rf'] * ttm) * pdf_df_pivot_interp[ttm]
 
     return adp_df
 
